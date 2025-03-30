@@ -40,8 +40,8 @@ type Join struct {
 // OperateSchema 通用操作schema结构体
 type OperateSchema struct{}
 
-// LoadSchema 查询指定路径下的json
-func LoadSearchSchema(schemaName string) (SearchSchema, error) {
+// loadSearchSchema 查询指定路径下的json
+func loadSearchSchema(schemaName string) (SearchSchema, error) {
 	// 拼接路径
 	filePath := schemaName + "_search_schema.json"
 
@@ -54,7 +54,7 @@ func LoadSearchSchema(schemaName string) (SearchSchema, error) {
 	// 类型转换
 	var searchSchema SearchSchema
 	jsonErr := json.Unmarshal(data, &schemaName)
-	if err != nil {
+	if jsonErr != nil {
 		return SearchSchema{}, jsonErr
 	}
 
