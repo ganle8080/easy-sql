@@ -1,4 +1,19 @@
 {
-    "table_name":"demo",
-    "column":[]
+    "table_name":"user",
+    "columns":[
+        {
+            "column":"user.id",
+            "alias":"ID",
+            "handler":"UserNameHandler.DealName;name"
+        }
+    ],
+    "joins":[],
+    "wheres":[
+        {
+            "field_id":"",
+            "handler":""
+        }
+    ],
+    "orders":[],
+    "groups":[]
 }
