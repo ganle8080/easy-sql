@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 
+	"github.com/ganle8080/easysql/config/handler"
 	"gorm.io/gorm"
 )
 
@@ -16,7 +18,6 @@ type SearchSchema struct {
 	Joins     []Join      `json:"joins"`
 	Wheres    []Condition `json:"wheres"`
 	Orders    []string    `json:"orders"`
-	Groups    []string    `json:"groups"`
 }
 
 // Column 字段
@@ -41,10 +42,10 @@ type Join struct {
 }
 
 type FieldHandler struct {
-	Name        string
+	Field       string
 	HandlerName string
 	MethodName  string
-	Args        []string
+	Args        []interface{}
 }
 
 type SearchData struct {
@@ -57,9 +58,9 @@ type SearchData struct {
 }
 
 type Condition struct {
-	Name  string `json:"name"`
-	Type  string `json:"type"`
-	Value string `json:"value"`
+	Name  string      `json:"name"`
+	Type  string      `json:"type"`
+	Value interface{} `json:"value"`
 }
 
 func Search(db *gorm.DB, searchData *SearchData, schema *SearchSchema) {
@@ -87,7 +88,10 @@ func loadSearchSchema(schemaName string) (SearchSchema, error) {
 	return searchSchema, nil
 }
 
-func buildColumns(searchFields []string, columns []Column) (resultFields []string, handlers []FieldHandler, err error) {
+func buildColumns(searchFields []string, columns []Column) (columnStr string, handlers []FieldHandler, err error) {
+
+	var resultFields []string
+
 	searchFieldStr := strings.Join(searchFields, ";")
 
 	// 判断fieldStr是否为空
@@ -105,11 +109,17 @@ func buildColumns(searchFields []string, columns []Column) (resultFields []strin
 			if len(handlerStructStrs) >= 2 && len(handlerAndMethodStrs) == 2 {
 				handlerName := handlerAndMethodStrs[0]
 				handlerMethodName := handlerAndMethodStrs[1]
-				handlerMethodArgs := handlerStructStrs[1:]
+				handlerMethodArgs := []interface{}{}
+				if len(handlerStructStrs[1:]) > 0 {
+					for _, v := range handlerStructStrs[1:] {
+						handlerMethodArgs = append(handlerMethodArgs, v)
+					}
+				}
 				handler := FieldHandler{
-					Name:       handlerName,
-					MethodName: handlerMethodName,
-					Args:       handlerMethodArgs,
+					Field:       c.Alias,
+					HandlerName: handlerName,
+					MethodName:  handlerMethodName,
+					Args:        handlerMethodArgs,
 				}
 				handlers = append(handlers, handler)
 			} else {
@@ -118,13 +128,21 @@ func buildColumns(searchFields []string, columns []Column) (resultFields []strin
 			}
 		}
 	}
+	columnStr = strings.Join(resultFields, ", ")
 	return
 }
 
-func buildWheres(conditions []Condition, wheres []Where) (whereStrs []string, handlers []FieldHandler, err error) {
+func buildWheres(conditions []Condition, wheres []Where) (whereStr string, err error) {
+	var whereStrs []string
+
 	wheresMap := map[string]Where{}
 	for _, w := range wheres {
 		wheresMap[w.Field] = w
+	}
+
+	conditionsMap := map[string]Condition{}
+	for _, c := range conditions {
+		conditionsMap[c.Name] = c
 	}
 
 	for _, c := range conditions {
@@ -136,18 +154,120 @@ func buildWheres(conditions []Condition, wheres []Where) (whereStrs []string, ha
 			return
 		}
 
-		fmt.Printf("where: %v\n", where)
+		handlerStr := where.Handler
+		if len(handlerStr) > 0 {
+			handler := FieldHandler{
+				Field: where.Field,
+			}
+
+			handlerStructStrs := strings.Split(handlerStr, ";")
+			handlerAndMethodStrs := strings.Split(handlerStructStrs[0], ".")
+
+			if len(handlerStructStrs) >= 2 && len(handlerAndMethodStrs) == 2 {
+
+				handler.HandlerName = handlerAndMethodStrs[0]
+				handler.MethodName = handlerAndMethodStrs[1]
+				handlerMethodArgs := []interface{}{}
+				if len(handlerStructStrs[1:]) > 0 {
+					for _, v := range handlerStructStrs[1:] {
+						value, ok := conditionsMap[v]
+						if !ok {
+							err = fmt.Errorf("field:%s not found in conditions", v)
+							return
+						}
+						handlerMethodArgs = append(handlerMethodArgs, value)
+					}
+				}
+
+				handlerResult, handErr := doHandler(&handler)
+				if handErr != nil {
+					return
+				}
+				c.Value = handlerResult
+			} else {
+				err = fmt.Errorf("schema error handler not conform to the standards ,column is %s .", where.Field)
+				return
+			}
+		}
 
 		switch c.Type {
 		case "eq":
-			str := c.Name + " = " + c.Value
+			str := fmt.Sprintf("%s = %v", c.Name, c.Value)
 			whereStrs = append(whereStrs, str)
 		case "ne":
+			str := fmt.Sprintf("%s != %v", c.Name, c.Value)
+			whereStrs = append(whereStrs, str)
 		case "lt":
+			str := fmt.Sprintf("%s > %v", c.Name, c.Value)
+			whereStrs = append(whereStrs, str)
 		case "gt":
+			str := fmt.Sprintf("%s < %v", c.Name, c.Value)
+			whereStrs = append(whereStrs, str)
 		case "like":
-		case "null":
+			str := fmt.Sprintf("%s like %v", c.Name, c.Value)
+			whereStrs = append(whereStrs, str)
 		}
 
 	}
+
+	whereStr = strings.Join(whereStrs, " AND ")
+	return
+}
+
+func buildJoins(tableName string, joins []Join) (joinStr string, err error) {
+	resultStrs := []string{}
+
+	for _, join := range joins {
+		// LEFT JOIN demo_other ON demo_other.demo_id = demo.id
+
+		str := fmt.Sprintf("%s %s ON %s.%s = %s.%s", join.JoinType, join.JoinTableName, join.JoinTableName, join.JoinTableField, tableName, join.LinkField)
+
+		resultStrs = append(resultStrs, str)
+
+	}
+
+	joinStr = strings.Join(resultStrs, " ")
+	return
+}
+
+func buildPage(page int, size int) string {
+	offset := (page - 1) * size
+	return fmt.Sprintf("LIMIT %v OFFSET %v", size, offset)
+}
+
+func buildOrders(arr []string) string {
+	return strings.Join(arr, ", ")
+}
+
+func doHandler(h *FieldHandler) (result interface{}, err error) {
+	// 获取处理器工厂
+	factory, ok := handler.GetHandlerFactory(h.HandlerName)
+	if !ok {
+		err = fmt.Errorf("handler:%s not found", h.HandlerName)
+		return
+	}
+
+	// 创建处理器实例
+	instance, err := factory()
+	if err != nil {
+		return
+	}
+
+	// 使用反射查找方法
+	method := reflect.ValueOf(instance).MethodByName(h.MethodName)
+	if !method.IsValid() {
+		err = fmt.Errorf("Method not found: %s\n", h.MethodName)
+	}
+
+	argList := []reflect.Value{}
+
+	for _, v := range h.Args {
+		argList = append(argList, reflect.ValueOf(v))
+	}
+
+	// 调用方法
+	results := method.Call(argList)
+	result = results[0].Interface()
+
+	return
 }
